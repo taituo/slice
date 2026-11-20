@@ -70,9 +70,12 @@ async function main() {
   });
 
   let firstKitchen = '';
-  await step('order is routed to the nearest kitchen and payment authorized', async () => {
+  await step('order is routed to the nearest kitchen with a free oven and payment authorized', async () => {
     const v = await waitFor(orderId, ['payment_authorized']);
-    assert.equal(v.pizzeriaId, nearestId);
+    // On a busy database the closest kitchen may be full; routing must then pick the next with room.
+    const withRoom = (await customer.nearest(home.lat, home.lng, 5)).pizzerias.filter((p) => p.id === v.pizzeriaId || p.activeOrders < p.capacityPer15Min);
+    assert.equal(v.pizzeriaId, withRoom[0]!.id);
+    if (v.pizzeriaId !== nearestId) console.log(`   ${nearestId} was full; routed to ${v.pizzeriaId}`);
     assert.ok(v.quote && v.quote.totalCents > 0);
     firstKitchen = v.pizzeriaId!;
   });
