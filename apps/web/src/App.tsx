@@ -352,6 +352,7 @@ function Checkout(props: {
 function Ticket({ orderId, onNew }: { orderId: string; onNew: () => void }) {
   const [view, setView] = useState<OrderView | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [callback, setCallback] = useState<string | null>(null);
 
   const refresh = useCallback(() => api.order(orderId).then(setView).catch((e) => setErr(e.message)), [orderId]);
   // Live updates from the order workflow over Server-Sent Events (courier GPS included).
@@ -420,8 +421,21 @@ function Ticket({ orderId, onNew }: { orderId: string; onNew: () => void }) {
           <strong>{formatEur(view.quote.totalCents)}</strong>
         </p>
       )}
+      {callback && <p className="ticket-note">{callback}</p>}
       <div className="ticket-actions">
         {cancellable && <button onClick={() => api.cancel(orderId).then(refresh).catch((e) => setErr(e.message))}>Cancel order</button>}
+        {!ended && view.status !== 'delivered' && (
+          <button
+            onClick={() =>
+              fetch(`/v1/orders/${encodeURIComponent(orderId)}/callback`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+                .then((r) => r.json())
+                .then((r) => setCallback(r.status === 'merged' ? 'Already on it: we will call you shortly.' : 'We will call you in a moment.'))
+                .catch((e) => setErr(e.message))
+            }
+          >
+            Call me
+          </button>
+        )}
         {(view.status === 'delivered' || ended) && (
           <button onClick={() => window.dispatchEvent(new CustomEvent('slice:help', { detail: `I have a problem with my order ${orderId}` }))}>Get help</button>
         )}

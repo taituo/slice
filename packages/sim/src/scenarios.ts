@@ -57,6 +57,34 @@ const payment = async (orderId: string) => (await db().query(`SELECT status, amo
 const caseRow = async (id: string) => (await db().query(`SELECT * FROM support_cases WHERE id=$1`, [id])).rows[0];
 const caseIdIn = (c: DummyCustomer) => c.findInData((r) => r?.caseId) ?? c.transcript.at(-1)!.text.match(/case_[a-z0-9]+/)?.[0];
 
+/** Calls made with the person's own session (app) token. */
+async function sessionReq(c: DummyCustomer, method: string, path: string, body?: unknown): Promise<any> {
+  const r = await fetch(`${API}${path}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${c.sessionToken}` }, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+/** One spoken turn on a callback: what ElevenLabs sends to our custom-LLM endpoint. */
+async function voiceTurn(callbackId: string, said: string): Promise<string> {
+  const r = (await fetch(`${API}/v1/voice/llm/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.VOICE_LLM_KEY ?? 'dev-voice-llm-key'}` },
+    body: JSON.stringify({ messages: [{ role: 'user', content: said }], elevenlabs_extra_body: { callback_ref: callbackId } }),
+  }).then((x) => x.json())) as any;
+  return r.choices[0].message.content as string;
+}
+
+/** ElevenLabs' signed post-call webhook. */
+async function postCall(conversationId: string, result: 'success' | 'failure', summary: string) {
+  const body = JSON.stringify({ type: 'post_call_transcription', data: { conversation_id: conversationId, transcript: [{}, {}], analysis: { call_successful: result, transcript_summary: summary } } });
+  const res = await fetch(`${API}/v1/voice/elevenlabs/post-call`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'elevenlabs-signature': signElevenLabs(body, process.env.ELEVENLABS_WEBHOOK_SECRET ?? 'dev-elevenlabs-secret') },
+    body,
+  });
+  assert.equal(res.status, 200);
+}
+
 type Scenario = { id: string; title: string; run: (log: (s: string) => void, people: DummyCustomer[]) => Promise<void> };
 
 export const scenarios: Scenario[] = [
@@ -500,6 +528,158 @@ export const scenarios: Scenario[] = [
       }
       assert.ok(themes.size >= 3, 'surfaces carry different provider themes');
       log(`${themes.size} distinct provider themes rendered by the same agent.`);
+    },
+  },
+  {
+    id: 's22',
+    title: 'App button "call me back": the AI phones with the order in context and the call continues there',
+    async run(log, people) {
+      const c = await person('Wren');
+      people.push(c);
+      const orderId = await orderViaAgent(c, 'I want 1 margherita');
+      await drive(orderId, 'preparing');
+      const r = await sessionReq(c, 'POST', '/v1/me/callback', { timings: { debounceMs: 300, answerTimeoutMs: 20_000 } });
+      const cb = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${r.callbackId}`);
+        return x.status === 'calling' ? x : null;
+      }, 15_000, 'call placed');
+      assert.match(cb.context.opener, /about your order .* preparing/);
+      log(`Tapped "Call me back". The agent dialled (ElevenLabs ${cb.conversationId.startsWith('dryrun') ? 'dry run' : 'live'}) and opened with: "${cb.context.opener}"`);
+      const said = await voiceTurn(cb.id, 'where is my pizza?');
+      assert.match(said, /preparing/);
+      log(`Caller: "where is my pizza?" → agent: "${said}"`);
+      await postCall(cb.conversationId, 'success', 'Customer asked about order status; answered.');
+      await until(async () => ((await adminReq('GET', `/v1/callbacks/${cb.id}`)).status === 'completed' ? true : null), 8000, 'completed');
+      log('Post-call webhook closed the callback as completed.');
+    },
+  },
+  {
+    id: 's23',
+    title: 'Physical button, double press: "my usual" at the best competing price, confirmed by voice',
+    async run(log, people) {
+      const c = await person('Xia');
+      people.push(c);
+      const first = await orderViaAgent(c, 'I want 2 margherita and a lemonade');
+      await drive(first, 'delivered');
+      const btn = await sessionReq(c, 'POST', '/v1/me/buttons', { label: 'Fridge button', kind: 'physical' });
+      log(`Registered a physical button; the device posts to ${btn.pressUrl.replace(API, '')}.`);
+      const press = await fetch(`${API}/v1/buttons/${btn.id}/press`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-button-token': btn.token },
+        body: JSON.stringify({ press: 'double', timings: { debounceMs: 300, answerTimeoutMs: 20_000 } }),
+      }).then((x) => x.json() as Promise<any>);
+      assert.equal(press.action, 'reorder');
+      const cb = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${press.callbackId}`);
+        return x.status === 'calling' ? x : null;
+      }, 20_000, 'call placed');
+      assert.ok(cb.live.offer, 'kitchens bid on the usual before the call');
+      log(`Kitchens bid on the usual before dialling. Agent opened: "${cb.context.opener}"`);
+      const said = await voiceTurn(cb.id, 'yes please');
+      assert.match(said, /Ordered from/);
+      assert.doesNotMatch(said, /ord_/, 'ids are never read out on the phone');
+      const orderId = (await db().query(`SELECT id FROM orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1`, [c.customerId])).rows[0].id as string;
+      assert.notEqual(orderId, first);
+      const v = await waitForOrder(orderId, ['payment_authorized']);
+      assert.equal((await payment(orderId)).amount_cents, cb.live.offer.priceCents, 'charged the offered price');
+      log(`Caller: "yes please" → "${said}" (routed to ${v.pizzeriaName}, exactly ${formatEur(cb.live.offer.priceCents)} authorized).`);
+      await postCall(cb.conversationId, 'success', 'Reordered the usual.');
+    },
+  },
+  {
+    id: 's24',
+    title: 'Button pressed five times in a row → one call, not five',
+    async run(log, people) {
+      const c = await person('Yan');
+      people.push(c);
+      const btn = await sessionReq(c, 'POST', '/v1/me/buttons', { label: 'Hall button', kind: 'physical' });
+      const results: any[] = [];
+      for (let i = 0; i < 5; i++) {
+        results.push(
+          await fetch(`${API}/v1/buttons/${btn.id}/press?token=${encodeURIComponent(btn.token)}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ timings: { debounceMs: 1500, answerTimeoutMs: 20_000 } }),
+          }).then((x) => x.json()),
+        );
+      }
+      assert.equal(new Set(results.map((r) => r.callbackId)).size, 1);
+      const cb = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${results[0].callbackId}`);
+        return x.status === 'calling' ? x : null;
+      }, 15_000, 'call placed');
+      const calls = (await db().query(`SELECT count(*)::int AS n FROM voice_calls WHERE conversation_id = $1`, [cb.conversationId])).rows[0].n;
+      assert.equal(cb.presses, 5);
+      assert.equal(calls, 1);
+      log(`5 presses → 1 callback (${results.filter((r) => r.status === 'merged').length} merged) → 1 call.`);
+      await postCall(cb.conversationId, 'success', 'ok');
+    },
+  },
+  {
+    id: 's25',
+    title: 'Nobody answers → two retries → a text message instead',
+    async run(log, people) {
+      const c = await person('Zed');
+      people.push(c);
+      const r = await sessionReq(c, 'POST', '/v1/me/callback', { timings: { debounceMs: 200, maxAttempts: 3, retryDelayMs: 300, answerTimeoutMs: 600 } });
+      const cb = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${r.callbackId}`);
+        return x.status === 'unreachable' ? x : null;
+      }, 20_000, 'unreachable');
+      const sms = (await db().query(`SELECT message FROM notifications WHERE recipient=$1 AND channel='sms' ORDER BY id DESC LIMIT 1`, [`customer:${c.customerId}`])).rows[0];
+      assert.equal(cb.attempts, 3);
+      assert.match(sms.message, /tried to call you back/);
+      log(`3 unanswered calls (minutes apart in production; 0.3 s here) → SMS: "${sms.message}"`);
+    },
+  },
+  {
+    id: 's26',
+    title: 'Pressed during quiet hours → scheduled for morning; a long press cancels it',
+    async run(log, people) {
+      const c = await person('Ari');
+      people.push(c);
+      const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Berlin', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
+      const btn = await sessionReq(c, 'POST', '/v1/me/buttons', { label: 'Bedside button', kind: 'physical', quietFrom: hour, quietTo: (hour + 1) % 24 });
+      const press = (p: string) =>
+        fetch(`${API}/v1/buttons/${btn.id}/press`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-button-token': btn.token }, body: JSON.stringify({ press: p, timings: { debounceMs: 200 } }) }).then(
+          (x) => x.json() as Promise<any>,
+        );
+      const r = await press('single');
+      const cb = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${r.callbackId}`);
+        return x.status === 'scheduled' ? x : null;
+      }, 10_000, 'scheduled');
+      log(`Quiet hours ${hour}:00–${(hour + 1) % 24}:00 Berlin time: call scheduled for ${cb.scheduledFor.slice(11, 16)} UTC instead of now.`);
+      const cancel = await press('long');
+      assert.equal(cancel.status, 'cancelled');
+      await until(async () => ((await adminReq('GET', `/v1/callbacks/${r.callbackId}`)).status === 'cancelled' ? true : null), 8000, 'cancelled');
+      const calls = (await db().query(`SELECT count(*)::int AS n FROM voice_calls WHERE recipient=$1`, [`customer:${c.customerId}`])).rows[0].n;
+      assert.equal(calls, 0);
+      log('Long press cancelled it; no call was ever placed.');
+    },
+  },
+  {
+    id: 's27',
+    title: 'Support misses its SLA → the AI calls the customer on its own',
+    async run(log, people) {
+      const c = await person('Bo');
+      people.push(c);
+      const orderId = await orderViaAgent(c, 'I want 5 night owl');
+      await drive(orderId, 'delivered');
+      const res = await fetch(`${API}/v1/support/cases`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${c.token}` },
+        body: JSON.stringify({ message: 'all the wrong pizzas', orderId, timings: { approvalSlaMs: 500 } }),
+      }).then((r) => r.json() as Promise<any>);
+      const cb = await until(async () => (await db().query(`SELECT id, source FROM callbacks WHERE customer_id=$1`, [c.customerId])).rows[0] ?? null, 10_000, 'proactive callback');
+      const live = await until(async () => {
+        const x = await adminReq('GET', `/v1/callbacks/${cb.id}`);
+        return x.status === 'calling' ? x : null;
+      }, 15_000, 'calling');
+      assert.match(live.context.opener, /support case/);
+      log(`Case ${res.caseId} breached its SLA; the platform (${cb.source}) called the customer: "${live.context.opener}"`);
+      await adminReq('POST', `/v1/support/cases/${res.caseId}/decision`, { approve: true });
+      await postCall(live.conversationId, 'success', 'Apologised, refund approved.');
     },
   },
 ];

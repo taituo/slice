@@ -588,3 +588,131 @@ export async function logVoiceCall(v: { provider: string; direction: 'inbound' |
     [v.provider, v.direction, v.conversationId ?? null, v.recipient ?? null, v.purpose, v.status, v.summary ?? null],
   );
 }
+
+// ---------------------------------------------------------------- buttons & callbacks
+
+export interface ButtonRow {
+  id: string;
+  customerId: string;
+  tenantId: string;
+  label: string;
+  kind: 'physical' | 'app';
+  actions: Record<'single' | 'double' | 'long', 'callback' | 'reorder' | 'cancel' | 'support_followup'>;
+  quietFrom: number | null;
+  quietTo: number | null;
+  timezone: string;
+}
+const toButton = (r: any): ButtonRow => ({
+  id: r.id,
+  customerId: r.customer_id,
+  tenantId: r.tenant_id,
+  label: r.label,
+  kind: r.kind,
+  actions: r.actions,
+  quietFrom: r.quiet_from,
+  quietTo: r.quiet_to,
+  timezone: r.timezone,
+});
+
+export async function registerButton(b: { customerId: string; tenantId: string; label: string; kind: 'physical' | 'app'; quietFrom?: number | null; quietTo?: number | null; timezone?: string }) {
+  const id = newId('btn');
+  const token = `sk_btn_${randomBytes(18).toString('base64url')}`;
+  await db().query(
+    `INSERT INTO buttons (id, token_hash, customer_id, tenant_id, label, kind, quiet_from, quiet_to, timezone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id, sha(token), b.customerId, b.tenantId, b.label, b.kind, b.quietFrom ?? null, b.quietTo ?? null, b.timezone ?? 'Europe/Berlin'],
+  );
+  return { id, token };
+}
+export async function buttonByToken(id: string, token: string): Promise<ButtonRow | null> {
+  const { rows } = await db().query(
+    `UPDATE buttons SET last_pressed_at=now() WHERE id=$1 AND token_hash=$2 AND revoked_at IS NULL RETURNING *`,
+    [id, sha(token)],
+  );
+  return rows[0] ? toButton(rows[0]) : null;
+}
+export async function listButtons(customerId: string) {
+  const { rows } = await db().query(`SELECT * FROM buttons WHERE customer_id=$1 AND revoked_at IS NULL ORDER BY created_at`, [customerId]);
+  return rows.map(toButton);
+}
+export async function revokeButton(customerId: string, id: string) {
+  const r = await db().query(`UPDATE buttons SET revoked_at=now() WHERE id=$1 AND customer_id=$2 AND revoked_at IS NULL`, [id, customerId]);
+  return (r.rowCount ?? 0) > 0;
+}
+
+export async function createCallback(c: { id: string; customerId: string; tenantId: string; source: string; intent: string }) {
+  await db().query(
+    `INSERT INTO callbacks (id, customer_id, tenant_id, source, intent, status) VALUES ($1,$2,$3,$4,$5,'requested')
+     ON CONFLICT (id) DO UPDATE SET presses = callbacks.presses + 1, updated_at = now()`,
+    [c.id, c.customerId, c.tenantId, c.source, c.intent],
+  );
+}
+export async function updateCallback(id: string, patch: { status?: string; attempts?: number; scheduledFor?: string | null; conversationId?: string | null; context?: unknown; outcome?: string; presses?: number }) {
+  await db().query(
+    `UPDATE callbacks SET status=coalesce($2,status), attempts=coalesce($3,attempts), scheduled_for=coalesce($4,scheduled_for),
+       conversation_id=coalesce($5,conversation_id), context=coalesce($6,context), outcome=coalesce($7,outcome),
+       presses=coalesce($8,presses), updated_at=now() WHERE id=$1`,
+    [id, patch.status ?? null, patch.attempts ?? null, patch.scheduledFor ?? null, patch.conversationId ?? null,
+      patch.context === undefined ? null : JSON.stringify(patch.context), patch.outcome ?? null, patch.presses ?? null],
+  );
+}
+export async function getCallback(id: string) {
+  const { rows } = await db().query(`SELECT * FROM callbacks WHERE id=$1`, [id]);
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id as string,
+    customerId: r.customer_id as string,
+    tenantId: r.tenant_id as string,
+    source: r.source as string,
+    intent: r.intent as string,
+    status: r.status as string,
+    presses: r.presses as number,
+    attempts: r.attempts as number,
+    scheduledFor: r.scheduled_for ? new Date(r.scheduled_for).toISOString() : null,
+    conversationId: r.conversation_id as string | null,
+    context: r.context as Record<string, any>,
+    outcome: r.outcome as string | null,
+  };
+}
+export async function callbackByConversation(conversationId: string) {
+  const { rows } = await db().query(`SELECT id FROM callbacks WHERE conversation_id=$1`, [conversationId]);
+  return rows[0] ? getCallback(rows[0].id) : null;
+}
+
+/** What the agent should know before it dials: last order, open issues, upcoming bookings. */
+export async function customerContext(customerId: string) {
+  const pool = db();
+  const contact = await getCustomerContact(customerId);
+  const lastOrder = (
+    await pool.query(
+      `SELECT o.id, o.status, o.items, o.total_cents, o.delivery_lat, o.delivery_lng, o.created_at, p.name AS pizzeria
+       FROM orders o LEFT JOIN pizzerias p ON p.id=o.pizzeria_id WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 1`,
+      [customerId],
+    )
+  ).rows[0];
+  const usual = (
+    await pool.query(
+      `SELECT items, delivery_lat, delivery_lng FROM orders WHERE customer_id=$1 AND status='delivered' ORDER BY created_at DESC LIMIT 1`,
+      [customerId],
+    )
+  ).rows[0];
+  const openCases = (
+    await pool.query(`SELECT id, category, status FROM support_cases WHERE customer_id=$1 AND status NOT IN ('resolved','closed') ORDER BY created_at DESC LIMIT 3`, [customerId])
+  ).rows;
+  const bookings = (
+    await pool.query(
+      `SELECT b.id, b.status, c.title, c.starts_at FROM class_bookings b JOIN gym_classes c ON c.id=b.class_id
+       WHERE b.customer_id=$1 AND c.starts_at > now() AND b.status IN ('confirmed','waitlisted') ORDER BY c.starts_at LIMIT 3`,
+      [customerId],
+    )
+  ).rows;
+  return {
+    firstName: ((contact?.name || '').split(' ')[0] || null) === 'Customer' ? null : (contact?.name || '').split(' ')[0] || null,
+    lastOrder: lastOrder
+      ? { id: lastOrder.id, status: lastOrder.status, items: lastOrder.items, totalCents: lastOrder.total_cents, pizzeria: lastOrder.pizzeria, at: new Date(lastOrder.created_at).toISOString() }
+      : null,
+    usual: usual ? { items: usual.items, lat: usual.delivery_lat, lng: usual.delivery_lng } : null,
+    openCases,
+    upcomingBookings: bookings.map((b) => ({ id: b.id, status: b.status, title: b.title, startsAt: new Date(b.starts_at).toISOString() })),
+  };
+}

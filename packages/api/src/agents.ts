@@ -225,6 +225,11 @@ const foodAgent: AgentDef = {
     const orderId = text.match(/ord_[a-z0-9]+/i)?.[0];
     if (orderId && /cancel/.test(t)) return ok(await call('cancel_order', { orderId }));
     if (orderId) return ok(await call('order_status', { orderId }));
+    // "Where's my order?" from a signed-in customer (or a callback) needs no order number.
+    if (ctx.customerId && /\b(where|status|track|how long|my order|my pizza)\b/.test(t) && !/\b(menu|offers?)\b/.test(t)) {
+      const latest = (await repo.getPool().query(`SELECT id FROM orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1`, [ctx.customerId])).rows[0];
+      if (latest) return ok(await call('order_status', { orderId: latest.id }));
+    }
     if (/\b(menu|vegan|spicy|pizzas?)\b/.test(t) && !/\b(order|want|offers?)\b/.test(t)) {
       const r = await call('get_menu', {});
       const tag = /vegan/.test(t) ? 'vegan' : /spicy/.test(t) ? 'spicy' : null;
@@ -312,10 +317,19 @@ export async function conciergeFor(tenantId: string): Promise<AgentDef> {
     id: `concierge-${tenant.id}`,
     name: tenant.branding ? `${tenant.name} assistant` : 'Nearby assistant',
     description: subs.map((s) => s.description).join('; '),
-    instructions: `${voice} Plan multi-step requests with write_todos and delegate to specialists. Use tools for every fact. Be brief.`,
+    instructions: `${voice} Plan multi-step requests with write_todos and delegate to specialists. Use tools for every fact. Be brief. If your previous message proposed a [pending offer <id>] and the customer agrees, call choose_offer with that offerId. On phone calls, speak in short sentences and never read out ids.`,
     tools: [...uiActions, ...toolsForDomains(['offers'])],
     subagents: subs,
     fallback: async (turn) => {
+      // A pending offer the agent proposed (e.g. "your usual" on a callback) + a yes → accept it.
+      if (/\b(yes|yeah|yep|sure|ok|okay|go ahead|please do|order it|kyllä|joo)\b/i.test(turn.text)) {
+        const pending = [...turn.history].reverse().find((h) => h.role === 'assistant' && /\[pending offer (rfq_[A-Za-z0-9]+_\d+)\]/.test(h.content));
+        const offerId = pending?.content.match(/\[pending offer (rfq_[A-Za-z0-9]+_\d+)\]/)?.[1];
+        if (offerId) {
+          const r = await turn.call('choose_offer', { offerId });
+          return { reply: r.say ?? 'Done.', ui: r.ui ?? [], toolCalls: [] };
+        }
+      }
       for (const s of subs) {
         const r = await s.fallback?.(turn);
         if (r) return r;

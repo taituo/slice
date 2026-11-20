@@ -16,6 +16,8 @@ import {
 } from '@slice/shared';
 import { ApplicationFailure } from '@temporalio/common';
 import { getTemporalClient } from '../temporal';
+import { ElevenLabsVoice } from '../adapters/voice';
+import { requestCallback } from '../callbacks';
 import type { ActivityDeps } from './index';
 
 export interface OfferRequestInput {
@@ -556,3 +558,56 @@ export const devAgent: AgentDef = {
     return { reply: body, ui: [], toolCalls: [] };
   },
 };
+
+// ------------------------------------------------------------------ AI callbacks
+
+/** Milliseconds until a call is allowed, given quiet hours in the button owner's time zone. */
+export function quietDelayMs(quiet: { from: number; to: number; timezone: string } | null | undefined, now: Date): number {
+  if (!quiet || quiet.from === quiet.to) return 0;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: quiet.timezone, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(now);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const minutesNow = get('hour') * 60 + get('minute') + get('second') / 60;
+  const from = quiet.from * 60;
+  const to = quiet.to * 60;
+  const inside = from < to ? minutesNow >= from && minutesNow < to : minutesNow >= from || minutesNow < to;
+  if (!inside) return 0;
+  const until = (to - minutesNow + 24 * 60) % (24 * 60);
+  return Math.round(until * 60_000);
+}
+
+export function createCallbackActivities(deps: ActivityDeps) {
+  return {
+    async quietDelay(input: { quiet: { from: number; to: number; timezone: string } | null }) {
+      return quietDelayMs(input.quiet, deps.now());
+    },
+    async updateCallback(input: { callbackId: string; status?: string; attempts?: number; scheduledFor?: string | null; conversationId?: string | null; context?: unknown; outcome?: string; presses?: number }) {
+      const { callbackId, ...patch } = input;
+      await repo.updateCallback(callbackId, patch);
+    },
+    async openOfferRequest(input: { requestId: string; tenantId: string; customerId: string; lat: number; lng: number; items: unknown }) {
+      await repo.createOfferRequest({ id: input.requestId, tenantId: input.tenantId, vertical: 'food', customerKey: input.customerId, lat: input.lat, lng: input.lng, request: { items: input.items }, preference: 'best_value' });
+    },
+    async callbackContext(input: { customerId: string }) {
+      return repo.customerContext(input.customerId);
+    },
+    /** Dial through ElevenLabs. Dry run (no keys) still yields a conversation id so the flow is testable. */
+    async placeCallbackCall(input: { callbackId: string; customerId: string; purpose: string; opener: string; variables: Record<string, string | number> }) {
+      const contact = await repo.getCustomerContact(input.customerId);
+      if (!contact?.phone) return { conversationId: null, dryRun: true, reachable: false };
+      const voice = new ElevenLabsVoice();
+      const r = await voice.call({ to: contact.phone, purpose: input.purpose, variables: { callback_ref: input.callbackId, opener: input.opener, ...input.variables } });
+      const conversationId = r.conversationId ?? `dryrun_${input.callbackId}_${Date.now().toString(36)}`;
+      await repo.logVoiceCall({ provider: 'elevenlabs', direction: 'outbound', conversationId, recipient: `customer:${input.customerId}`, purpose: input.purpose, status: r.dryRun ? 'dry_run' : 'initiated' });
+      return { conversationId, dryRun: r.dryRun, reachable: true };
+    },
+    /** Put the reason for the call into the agent's memory, so the conversation starts in context. */
+    /** The system asks for a callback on its own (e.g. a support case missed its SLA). */
+    async requestCallback(input: { customerId: string; tenantId: string; reason: string }) {
+      return requestCallback({ customerId: input.customerId, tenantId: input.tenantId, source: `system:${input.reason}`, intent: 'support_followup', reason: input.reason });
+    },
+    async seedCallbackSession(input: { sessionId: string; tenantId: string; customerId: string; opener: string; note: string }) {
+      await repo.ensureSession(input.sessionId, input.tenantId, 'voice', input.customerId);
+      await repo.appendMessage(input.sessionId, 'assistant', `${input.opener} ${input.note}`.trim());
+    },
+  };
+}

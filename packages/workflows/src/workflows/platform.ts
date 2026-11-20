@@ -226,7 +226,9 @@ export async function supportCaseWorkflow(input: SupportInput): Promise<CaseView
       // SLA missed: page the duty lead and keep waiting for a person.
       view.status = 'sla_breached';
       await acts.setCaseStatus({ caseId: input.caseId, status: 'sla_breached' });
-      await acts.supportMessage({ caseId: input.caseId, author: 'system', body: 'Approval SLA missed; duty lead paged.' });
+      await acts.supportMessage({ caseId: input.caseId, author: 'system', body: 'Approval SLA missed; duty lead paged; the AI calls the customer back.' });
+      // Fully agentic follow-up: the agent phones the customer instead of leaving them waiting.
+      if (input.customerId) await acts.requestCallback({ customerId: input.customerId, tenantId: 'slice', reason: `case ${input.caseId} SLA breached` }).catch(() => undefined);
       await condition(() => decision !== null, '24 hours');
     }
     const d = decision as { approve: boolean; amountCents?: number; note?: string } | null;

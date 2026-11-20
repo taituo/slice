@@ -17,7 +17,7 @@ import {
   TERMINAL_STATUSES,
   type A2uiAction,
 } from '@slice/shared';
-import { getTemporalClient, OPS_QUEUE } from '@slice/workflows';
+import { callbackStatusQuery, getTemporalClient, OPS_QUEUE, requestCallback } from '@slice/workflows';
 import { registerA2a } from './a2a';
 import { executeTool, runAgentFor } from './agents';
 import { registerAuth, requireCustomer, scopeForTool } from './auth';
@@ -178,6 +178,77 @@ export function buildApp(opts: { logger?: boolean } = {}) {
   app.delete('/v1/me/assistants/:id', { preHandler: requireCustomer('assistants') }, async (req, reply) => {
     const ok = await repo.revokeToken(req.principal!.customerId, (req.params as { id: string }).id);
     return ok ? reply.code(204).send() : reply.code(404).send({ error: 'not_found' });
+  });
+
+  // ------------------------------------------------------------ "call me back": physical & app buttons
+
+  const devTimings = (b: any) =>
+    process.env.NODE_ENV !== 'production' && b?.timings
+      ? z.object({ debounceMs: z.number().optional(), maxAttempts: z.number().optional(), retryDelayMs: z.number().optional(), answerTimeoutMs: z.number().optional() }).parse(b.timings)
+      : undefined;
+
+  app.post('/v1/me/buttons', { preHandler: requireCustomer('assistants') }, async (req, reply) => {
+    const b = z
+      .object({
+        label: z.string().min(1).max(60),
+        kind: z.enum(['physical', 'app']).default('physical'),
+        tenant: z.string().default(DEFAULT_TENANT),
+        quietFrom: z.number().int().min(0).max(23).optional(),
+        quietTo: z.number().int().min(0).max(23).optional(),
+        timezone: z.string().default('Europe/Berlin'),
+      })
+      .parse(req.body);
+    const r = await repo.registerButton({ customerId: req.principal!.customerId, tenantId: b.tenant, label: b.label, kind: b.kind, quietFrom: b.quietFrom, quietTo: b.quietTo, timezone: b.timezone });
+    return reply.code(201).send({ ...r, pressUrl: `${PUBLIC_URL}/v1/buttons/${r.id}/press`, presses: { single: 'call me back', double: 'my usual order', long: 'cancel' } });
+  });
+  app.get('/v1/me/buttons', { preHandler: requireCustomer() }, async (req) => ({ buttons: await repo.listButtons(req.principal!.customerId) }));
+  app.delete('/v1/me/buttons/:id', { preHandler: requireCustomer('assistants') }, async (req, reply) =>
+    (await repo.revokeButton(req.principal!.customerId, (req.params as { id: string }).id)) ? reply.code(204).send() : reply.code(404).send({ error: 'not_found' }),
+  );
+
+  /** A press from a device. Token in `x-button-token`, a Bearer header, or `?token=` for devices that can only call a URL. */
+  const pressHandler = async (req: FastifyRequest, reply: FastifyReply) => {
+    const id = (req.params as { id: string }).id;
+    const q = req.query as { token?: string; press?: string };
+    const auth = req.headers.authorization?.startsWith('Bearer sk_btn_') ? req.headers.authorization.slice(7) : undefined;
+    const token = (req.headers['x-button-token'] as string | undefined) ?? auth ?? q.token;
+    const button = token ? await repo.buttonByToken(id, token) : null;
+    if (!button) return reply.code(401).send({ error: 'unauthorized' });
+    const press = z.enum(['single', 'double', 'long']).parse((req.body as any)?.press ?? q.press ?? 'single');
+    const action = button.actions[press];
+    const quiet = button.quietFrom != null && button.quietTo != null ? { from: button.quietFrom, to: button.quietTo, timezone: button.timezone } : null;
+    const r = await requestCallback({
+      customerId: button.customerId,
+      tenantId: button.tenantId,
+      source: `button:${button.id}`,
+      intent: action === 'cancel' ? 'cancel' : action === 'reorder' ? 'reorder' : 'callback',
+      quiet,
+      timings: devTimings(req.body),
+    });
+    return reply.code(202).send({ press, action, ...r });
+  };
+  app.post('/v1/buttons/:id/press', pressHandler);
+  // Some buttons (e.g. Shelly) can only fetch a URL: same handler, token and press in the query.
+  app.get('/v1/buttons/:id/press', pressHandler);
+
+  app.post('/v1/me/callback', { preHandler: requireCustomer('support') }, async (req, reply) => {
+    const b = z.object({ intent: z.enum(['callback', 'reorder', 'cancel']).default('callback'), tenant: z.string().default(DEFAULT_TENANT), reason: z.string().max(200).optional() }).parse(req.body ?? {});
+    return reply.code(202).send(await requestCallback({ customerId: req.principal!.customerId, tenantId: b.tenant, source: 'app', intent: b.intent, reason: b.reason, timings: devTimings(req.body) }));
+  });
+
+  /** "Call me" on the order tracker: the order id is the capability. */
+  app.post('/v1/orders/:id/callback', async (req, reply) => {
+    const o = await repo.getOrder((req.params as { id: string }).id);
+    if (!o) return reply.code(404).send({ error: 'not_found' });
+    return reply.code(202).send(await requestCallback({ customerId: o.customerId, tenantId: DEFAULT_TENANT, source: `order:${o.id}`, intent: 'callback', reason: `order ${o.id}`, timings: devTimings(req.body) }));
+  });
+
+  app.get('/v1/callbacks/:id', async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const row = await repo.getCallback(id);
+    if (!row) return reply.code(404).send({ error: 'not_found' });
+    const live = await (await getTemporalClient()).workflow.getHandle(id).query(callbackStatusQuery).catch(() => null);
+    return { ...row, live };
   });
 
   // ------------------------------------------------------------ ordering (food)

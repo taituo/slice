@@ -83,7 +83,7 @@ export async function chooseOffer(input: {
     const d = offer.details as { items: CartLine[] };
     const placed = await placeOrder({
       customer: who,
-      delivery: { lat: req.lat, lng: req.lng, addressLine: input.addressLine ?? 'Shared location' },
+      delivery: { lat: req.lat, lng: req.lng, addressLine: input.addressLine ?? 'Usual delivery address' },
       items: d.items,
       channel: (['web', 'mobile', 'xr', 'agent', 'mcp', 'a2a', 'voice'].includes(input.channel) ? input.channel : 'agent') as any,
       offerId: offer.id,

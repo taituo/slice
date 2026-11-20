@@ -12,7 +12,7 @@ import { CourierCo, OwnFleet, providerFor, type DeliveryProvider } from '../adap
 import { GitHubIssues, type IssueTracker } from '../adapters/github';
 import { LoggingNotifier, type Channel, type Notifier } from '../adapters/notify';
 import { FakePay, type PaymentProvider } from '../adapters/payments';
-import { createPlatformActivities } from './platform';
+import { createCallbackActivities, createPlatformActivities } from './platform';
 
 export interface ActivityDeps {
   payments: PaymentProvider;
@@ -52,6 +52,7 @@ export interface RoutedPizzeria {
 export function createActivities(deps: ActivityDeps = defaultDeps()) {
   return {
     ...createPlatformActivities(deps),
+    ...createCallbackActivities(deps),
     // ------------------------------------------------------------ order lifecycle
 
     /** Nearest open pizzeria with spare capacity, skipping ones already tried. Returns null if none in range. */

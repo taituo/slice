@@ -6,3 +6,5 @@ export { analyzeKpis, type OpsFinding } from './workflows/analysis';
 export * from './workflows/platform-defs';
 export { triagePolicy, devAgent, type Triage } from './activities/platform';
 export { verifyElevenLabsSignature, signElevenLabs, ElevenLabsVoice } from './adapters/voice';
+export { requestCallback } from './callbacks';
+export type { CallbackInput } from './workflows/callback';

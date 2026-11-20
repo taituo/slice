@@ -14,3 +14,4 @@ export {
   adOptimizerWorkflow,
   agentTaskWorkflow,
 } from './platform';
+export { callbackWorkflow } from './callback';

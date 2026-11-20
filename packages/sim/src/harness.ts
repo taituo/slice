@@ -62,6 +62,7 @@ export class DummyCustomer {
   lastUi: A2uiServerMessage[] = [];
   lastData: unknown[] = [];
   token: string | null = null;
+  sessionToken: string | null = null;
   customerId: string | null = null;
   position: { lat: number; lng: number; addressLine?: string };
   private turns: ChatTurn[] = [];
@@ -123,6 +124,7 @@ export class DummyCustomer {
     const session = new SliceClient(API, { token: v.token });
     const asst = await (session as any).req('POST', '/v1/me/assistants', { label: `${this.opts.name}'s assistant`, scopes: ['browse', 'order', 'track', 'support'] });
     this.customerId = v.customerId;
+    this.sessionToken = v.token;
     this.token = asst.token;
     return this;
   }

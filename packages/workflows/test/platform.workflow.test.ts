@@ -109,6 +109,9 @@ describe('supportCaseWorkflow', () => {
       return { ok: true };
     },
     async notifyCustomer() {},
+    async requestCallback() {
+      return { callbackId: 'cb_test', status: 'started' as const };
+    },
   });
 
   it('auto-applies a small refund and closes after the rating', async () => {

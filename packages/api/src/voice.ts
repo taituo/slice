@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { findCustomerByPhone, logVoiceCall } from '@slice/db';
-import { verifyElevenLabsSignature } from '@slice/workflows';
+import { callbackByConversation, findCustomerByPhone, getCallback, logVoiceCall } from '@slice/db';
+import { callbackOutcomeSignal, getTemporalClient, verifyElevenLabsSignature } from '@slice/workflows';
 import { executeTool, runAgentFor } from './agents';
 import { openSupportCase } from './platform';
 
@@ -29,16 +29,19 @@ export function registerVoice(app: FastifyInstance) {
       messages: Array<{ role: string; content: string | null }>;
       stream?: boolean;
       user?: string;
-      elevenlabs_extra_body?: { caller_id?: string; conversation_id?: string; tenant?: string };
+      elevenlabs_extra_body?: { caller_id?: string; conversation_id?: string; tenant?: string; callback_ref?: string };
     };
     const extra = body.elevenlabs_extra_body ?? {};
     const lastUser = [...body.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+    // An AI callback carries its own reference: the agent already knows who it called and why.
+    const cb = extra.callback_ref ? await getCallback(extra.callback_ref) : null;
     const caller = extra.caller_id ?? (req.headers['x-caller-id'] as string | undefined);
-    const customerId = caller ? await findCustomerByPhone(caller) : null;
+    const customerId = cb?.customerId ?? (caller ? await findCustomerByPhone(caller) : null);
     const conv = extra.conversation_id ?? body.user ?? createHash('sha1').update(JSON.stringify(body.messages[0] ?? '')).digest('hex').slice(0, 16);
-    const r = await runAgentFor(extra.tenant ?? VOICE_TENANT, { sessionId: `voice-${conv}`, text: lastUser }, { channel: 'voice', customerId, a2ui: false });
+    const sessionId = cb ? `callback-${cb.id}` : `voice-${conv}`;
+    const r = await runAgentFor(cb?.tenantId ?? extra.tenant ?? VOICE_TENANT, { sessionId, text: lastUser }, { channel: 'voice', customerId, a2ui: false });
     // Voice wants speakable text: no markdown, no codes read out character by character.
-    const speak = r.reply.replace(/[*_`#]/g, '');
+    const speak = speakable(r.reply);
     const id = `chatcmpl-${conv}-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
     if (body.stream) {
@@ -82,8 +85,15 @@ export function registerVoice(app: FastifyInstance) {
       return reply.code(401).send({ error: 'bad_signature' });
     }
     const evt = req.body as { type: string; data?: any };
-    if (evt.type !== 'post_call_transcription') return { status: 'ignored' };
     const d = evt.data ?? {};
+    // Callback outcome: tell the waiting callback workflow how its call went.
+    const cb = d.conversation_id ? await callbackByConversation(d.conversation_id) : null;
+    if (cb) {
+      const status = evt.type === 'call_initiation_failure' ? 'no_answer' : d.analysis?.call_successful === 'failure' && !(d.transcript?.length > 1) ? 'no_answer' : 'completed';
+      await (await getTemporalClient()).workflow.getHandle(cb.id).signal(callbackOutcomeSignal, { status, summary: d.analysis?.transcript_summary }).catch(() => undefined);
+      if (evt.type !== 'post_call_transcription' || status === 'completed') return { status: 'received', callbackId: cb.id, outcome: status };
+    }
+    if (evt.type !== 'post_call_transcription') return { status: 'ignored' };
     const summary: string = d.analysis?.transcript_summary ?? '';
     const failed = d.analysis?.call_successful === 'failure';
     await logVoiceCall({ provider: 'elevenlabs', direction: 'inbound', conversationId: d.conversation_id, purpose: 'conversation', status: failed ? 'unsuccessful' : 'completed', summary });
@@ -96,4 +106,15 @@ export function registerVoice(app: FastifyInstance) {
     }
     return { status: 'received', caseId };
   });
+}
+
+/** Phone replies: no markdown, no internal ids ("Order number ord_x." → dropped), tidy spacing. */
+export function speakable(text: string): string {
+  return text
+    .replace(/\s*\(?\b(?:order number|booking|case)?\s*\b(?:ord|bk|case|rfq|cb|btn)_[A-Za-z0-9_]+\)?\.?/gi, '.')
+    .replace(/[*`#]/g, '')
+    .replace(/\.{2,}/g, '.')
+    .replace(/\s+([.,!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }

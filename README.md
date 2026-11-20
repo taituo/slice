@@ -44,6 +44,7 @@ bookings, vouchers, support cases and ads are durable Temporal workflows on Post
 | **Support** | `supportCaseWorkflow`: triage, then a written policy. Late over 60 min or failed order: €5 credit. Missing or wrong item: 40% refund up to €15. Quality problem: 30% up to €10. Anything larger goes to a person with an approval SLA; a missed SLA pages the duty lead. A CSAT follow-up comes afterwards. |
 | **Live tracking** | Couriers send GPS pings as `courierLocation` signals. The order workflow keeps position, remaining km and ETA, and `GET /v1/orders/:id/stream` pushes changes over SSE. |
 | **Generated ads** | `adOptimizerWorkflow` writes ads for what's true now: active specials, idle kitchens, classes with free spots. Copy comes from the LLM or templates. Guardrails reject unbacked "% off" claims and superlatives. Variants are served by Thompson sampling, and losers are paused. Clicks and conversions are attributed. |
+| **Call-me-back buttons** | A physical button (Flic, Shelly, ESP32, Home Assistant) or an app button starts `callbackWorkflow`. Five quick presses are one call. A double press asks for "my usual": kitchens bid on your last order before the call. Quiet hours are respected, unanswered calls are retried and then an SMS is sent, and a long press cancels. Our agent places the call through ElevenLabs, already holding the context (open order, open case, upcoming class). The system also calls on its own when a support case misses its SLA. See `integrations/buttons/`. |
 | **Gyms** | `classBookingWorkflow`: confirm or waitlist, automatic promotion when someone cancels, reminder, check-in, no-show. |
 | **Deep agents for development** | The same runtime powers a development agent. Clusters of real usage signals (unmet requests, errors) become GitHub issues with problem, files, feature flag, tests and rollout, which `bot-dev.yml` hands to a coding agent. |
 
@@ -67,9 +68,9 @@ npm run schedules                         # weekly ops review, reorders, feedbac
 
 | Command | What it proves | Last result |
 | --- | --- | --- |
-| `TEMPORAL_CLI_PATH=$(which temporal) npm test` | Pricing, offers and counter-bids, A2UI validity, ad sampling and guardrails, deep-agent runtime (plan, delegate, memory, actions, fallback), and order, auction, booking and support workflows on a real Temporal server | 27 / 27 |
+| `TEMPORAL_CLI_PATH=$(which temporal) npm test` | Pricing, offers and counter-bids, A2UI validity, ad sampling and guardrails, deep-agent runtime (plan, delegate, memory, actions, fallback), and order, auction, booking and support workflows on a real Temporal server | 31 / 31 |
 | `npm run e2e` | 21 checks through the real API: routing, rerouting, payments, cancellation, GDPR, MCP with an assistant token, A2A + A2UI + async tasks, voice endpoints, ads | 21 / 21 |
-| `npm run scenarios` | **21 problem scenarios** played by dummy customer agents over A2A: refunds, credits, approvals, SLA breach, reroutes, declined card, courier crash, voucher expiry, waitlist, no-show, live tracking, phone call, revoked assistant… | 21 / 21, see `reports/scenarios.md` |
+| `npm run scenarios` | **27 problem scenarios** played by dummy customer agents over A2A: refunds, credits, approvals, SLA breach, reroutes, declined card, courier crash, voucher expiry, waitlist, no-show, live tracking, phone call, revoked assistant, call-me-back buttons (context, my usual by voice, debounce, no answer, quiet hours, proactive call) | 27 / 27, see `reports/scenarios.md` |
 | `npm run load` | People on a map: diners, mall shoppers, gym-goers walking around Berlin, each a deep agent with its own token, plus kitchens and couriers | see `reports/load*.md` |
 
 Load test knobs: `PEOPLE`, `DURATION_S`, `THINK_MS`, `SEED`. Open `/?view=map` while it runs.
@@ -87,6 +88,7 @@ Load test knobs: `PEOPLE`, `DURATION_S`, `THINK_MS`, `SEED`. Open `/?view=map` w
 | `packages/sim` | Dummy customer agents, kitchen/courier actors, scenarios, load generator |
 | `apps/web` | Storefront: competing offers, live tracking, A2UI chat across tenants, ad slot, live load map |
 | `integrations/elevenlabs` | Voice setup guide and generated server-tool definitions |
+| `integrations/buttons` | Call-me-back button guide and an ESP32 sketch |
 
 ## What's real and what's simulated
 

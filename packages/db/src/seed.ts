@@ -61,7 +61,7 @@ export async function seed({ reset = false } = {}) {
       `TRUNCATE order_events, payments, deliveries, notifications, orders, consents, customer_addresses, customer_pii,
        customers, inventory, pizzeria_menu, product_signals, audit_log, vouchers, offers, offer_requests, specials,
        class_bookings, gym_classes, gyms, merchant_deals, merchants, agent_messages, agent_sessions, support_messages,
-       support_cases, ads, auth_codes, customer_tokens, voice_calls RESTART IDENTITY CASCADE`,
+       support_cases, ads, auth_codes, customer_tokens, voice_calls, callbacks, buttons RESTART IDENTITY CASCADE`,
     );
   }
   await seedTenants();
