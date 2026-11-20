@@ -1,0 +1,36 @@
+{
+  "name": "slice-network",
+  "private": true,
+  "description": "Golden-sample pizzeria franchise platform: React clients, TypeScript API, Temporal order workflows, Postgres, MCP + A2A agent interfaces.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "db:migrate": "tsx packages/db/src/migrate.ts",
+    "db:seed": "tsx packages/db/src/seed.ts",
+    "db:seed:scale": "tsx packages/db/src/seed-scale.ts",
+    "dev:api": "tsx watch packages/api/src/server.ts",
+    "dev:worker": "tsx watch packages/workflows/src/worker.ts",
+    "dev:web": "npm run dev -w @slice/web",
+    "dev:mcp": "tsx packages/mcp/src/http.ts",
+    "simulate": "tsx packages/sim/src/ops.ts",
+    "scenarios": "tsx packages/sim/src/scenarios.ts",
+    "load": "tsx packages/sim/src/load.ts",
+    "schedules": "tsx packages/workflows/src/schedules.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck -w @slice/web",
+    "test": "vitest run",
+    "e2e": "tsx scripts/e2e.ts",
+    "bench:routing": "tsx scripts/bench-routing.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

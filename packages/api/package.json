@@ -1,0 +1,15 @@
+{
+  "name": "@slice/api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/app.ts",
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@slice/db": "*",
+    "@slice/shared": "*",
+    "@slice/workflows": "*",
+    "@temporalio/client": "^1.26.0",
+    "fastify": "^5.2.0",
+    "zod": "^4.1.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@slice/sim",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/harness.ts",
+  "dependencies": {
+    "@slice/agents": "*",
+    "@slice/db": "*",
+    "@slice/shared": "*",
+    "@slice/workflows": "*"
+  }
+}

@@ -1,0 +1,32 @@
+name: bot-development
+
+# The usage → code loop. productFeedbackWorkflow files issues labelled `bot:triage` from real usage
+# (unhandled agent intents, errors, abandoned carts). This job hands each one to a coding agent,
+# which opens a PR. Guardrails: changes ship behind a feature flag, CI must pass, a human approves
+# the merge, and canary-release.yml exposes it to canary regions first.
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  implement:
+    if: github.event.label.name == 'bot:triage'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Implement issue #${{ github.event.issue.number }}: "${{ github.event.issue.title }}".
+            Rules for this repository:
+            - Put new customer-facing behaviour behind a feature flag (feature_flags table, default off).
+            - Never change orderWorkflow's existing step order without Temporal patching (workflow.patched).
+            - Add or update tests; `npm run typecheck && npm test` must pass.
+            - Open a PR titled "bot: <summary>" that links the issue and names the flag.

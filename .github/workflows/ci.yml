@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/slice
+      TEMPORAL_ADDRESS: localhost:7233
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+      - name: Install Temporal CLI
+        run: |
+          curl -sSf https://temporal.download/cli.sh | sh
+          echo "$HOME/.temporalio/bin" >> "$GITHUB_PATH"
+
+      - name: Unit + workflow tests
+        run: TEMPORAL_CLI_PATH="$HOME/.temporalio/bin/temporal" npm test
+
+      - name: Start stack
+        run: |
+          temporal server start-dev --headless --log-level error &
+          npm run db:seed -- --reset
+          npx tsx packages/workflows/src/worker.ts > worker.log 2>&1 &
+          npx tsx packages/api/src/server.ts > api.log 2>&1 &
+          npx tsx packages/mcp/src/http.ts > mcp.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:4000/health && curl -sf localhost:4100/health && break; sleep 1; done
+
+      - name: End-to-end
+        run: npm run e2e
+
+      - name: Problem scenarios (dummy customer agents)
+        run: npm run scenarios
+
+      - name: Load smoke test (30 people, 30 s)
+        run: PEOPLE=30 DURATION_S=30 THINK_MS=500 npm run load
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: reports/
+
+      - name: Build storefront
+        run: npm run build -w @slice/web
+
+      - name: Logs on failure
+        if: failure()
+        run: tail -n 200 worker.log api.log mcp.log || true

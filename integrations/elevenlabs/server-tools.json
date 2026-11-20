@@ -1,0 +1,579 @@
+{
+  "note": "Server tools for an ElevenLabs agent that runs its own LLM. Generated from packages/shared/src/tools.ts; regenerate after changing tools. Add caller_id = {{system__caller_id}} as a dynamic variable in each tool body so signed-up callers are recognised.",
+  "tools": [
+    {
+      "type": "webhook",
+      "name": "request_offers",
+      "description": "Ask every provider near a location to compete with an offer: pizzerias for a cart, gyms for a class, shops for a product (works inside a mall from GPS alone). Returns ranked offers.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/request_offers",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "vertical": {
+              "type": "string",
+              "enum": [
+                "food",
+                "fitness",
+                "retail"
+              ]
+            },
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "query": {
+              "description": "What the customer wants, e.g. \"running shoes\", \"yoga\", \"coffee\"",
+              "type": "string"
+            },
+            "items": {
+              "description": "Food only: cart lines",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "qty": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
+                  }
+                },
+                "required": [
+                  "sku",
+                  "qty"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "preference": {
+              "type": "string",
+              "enum": [
+                "best_value",
+                "cheapest",
+                "fastest",
+                "closest"
+              ]
+            }
+          },
+          "required": [
+            "vertical",
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "choose_offer",
+      "description": "Accept one offer: places the food order, books the class, or issues a shop voucher. Confirm the offer with the customer first.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/choose_offer",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "offerId": {
+              "type": "string"
+            },
+            "name": {
+              "description": "Customer name (not needed when the customer is signed in)",
+              "type": "string"
+            },
+            "phone": {
+              "description": "Phone in international format (not needed when signed in)",
+              "type": "string"
+            },
+            "addressLine": {
+              "description": "Food only: delivery address",
+              "type": "string"
+            }
+          },
+          "required": [
+            "offerId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "find_nearest_pizzeria",
+      "description": "Find the open pizzerias closest to a location, with distance, current load and delivery ETA.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/find_nearest_pizzeria",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "get_menu",
+      "description": "List menu items with SKU, price and tags (vegan, spicy, seasonal...).",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/get_menu",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "quote_order",
+      "description": "Price a cart for a delivery location, including campaigns and delivery fee, without ordering.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/quote_order",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "items": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "qty": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
+                  }
+                },
+                "required": [
+                  "sku",
+                  "qty"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "lat",
+            "lng",
+            "items"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "place_order",
+      "description": "Place a delivery order routed to the nearest pizzeria with capacity. Confirm items, address and total first.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/place_order",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Customer name (not needed when the customer is signed in)",
+              "type": "string"
+            },
+            "phone": {
+              "description": "Phone in international format (not needed when signed in)",
+              "type": "string"
+            },
+            "addressLine": {
+              "type": "string",
+              "description": "Street address"
+            },
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "items": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "qty": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
+                  }
+                },
+                "required": [
+                  "sku",
+                  "qty"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "notifyBy": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "sms",
+                  "call",
+                  "push",
+                  "email"
+                ]
+              }
+            }
+          },
+          "required": [
+            "addressLine",
+            "lat",
+            "lng",
+            "items"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "order_status",
+      "description": "Live status of an order, including courier position and ETA once it is on the way.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/order_status",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "orderId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "orderId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "cancel_order",
+      "description": "Cancel an order before pickup. Payment is released automatically.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/cancel_order",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "orderId": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "orderId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "find_classes",
+      "description": "Upcoming classes at nearby gyms with free spots and price.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/find_classes",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "kind": {
+              "description": "yoga, spin, hiit, strength",
+              "type": "string"
+            },
+            "withinHours": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 168
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "book_class",
+      "description": "Book a class. Full classes put the customer on the waitlist; a freed spot is given automatically.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/book_class",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "classId": {
+              "type": "string"
+            },
+            "name": {
+              "description": "Customer name (not needed when the customer is signed in)",
+              "type": "string"
+            },
+            "phone": {
+              "description": "Phone in international format (not needed when signed in)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "classId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "cancel_booking",
+      "description": "Cancel a class booking; the first person on the waitlist gets the spot.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/cancel_booking",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "bookingId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "bookingId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "booking_status",
+      "description": "Status of a class booking (confirmed, waitlisted, attended...).",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/booking_status",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "bookingId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "bookingId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "find_nearby_shops",
+      "description": "Shops around a GPS point (e.g. inside a mall) and what they sell. No mall integration needed.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/find_nearby_shops",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "description": "Latitude"
+            },
+            "lng": {
+              "type": "number",
+              "description": "Longitude"
+            },
+            "radiusM": {
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 3000
+            },
+            "category": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "open_support_case",
+      "description": "Open a support case (late, missing or wrong item, quality, booking or voucher problem). Small issues are resolved automatically.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/open_support_case",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "minLength": 3
+            },
+            "orderId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "support_case_status",
+      "description": "Status and resolution of a support case.",
+      "api_schema": {
+        "url": "https://YOUR_API_HOST/v1/voice/tools/support_case_status",
+        "method": "POST",
+        "request_headers": {
+          "x-voice-secret": "{{secret__voice_tool_secret}}"
+        },
+        "request_body_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "caseId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caseId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

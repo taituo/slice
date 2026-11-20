@@ -1,0 +1,94 @@
+name: canary-release
+
+# main → image → canary regions → automated health gate → promote everywhere, or roll back.
+# Canary is two layers that move together:
+#   1. infrastructure: new worker/API build serves the canary regions' task queues (orders.<region>)
+#   2. product: feature flags put the same regions (plus a % of customers) on the new behaviour
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      flag:
+        description: Feature flag to roll out with this build
+        default: fast-delivery-pricing
+      canary_regions:
+        description: Comma-separated canary regions
+        default: de-berlin-kreuzberg
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/slice
+  FLAG: ${{ inputs.flag || 'fast-delivery-pricing' }}
+  CANARY_REGIONS: ${{ inputs.canary_regions || 'de-berlin-kreuzberg' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: BUILD_ID=${{ steps.meta.outputs.tag }}
+
+  canary:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: canary
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy canary workers for the canary regions
+        # Replace with your platform: kubectl/helm, Fly, Cloud Run… WORKER_QUEUES scopes the pods.
+        run: |
+          echo "deploy ${IMAGE}:${{ needs.build.outputs.tag }} with WORKER_QUEUES=$(echo $CANARY_REGIONS | sed 's/[^,]*/orders.&/g')"
+      - name: Turn the flag on for canary regions
+        run: |
+          regions=$(jq -cn --arg r "$CANARY_REGIONS" '$r | split(",")')
+          curl -sf -X PUT "${{ vars.API_URL }}/v1/flags/${FLAG}" \
+            -H "x-admin-key: ${{ secrets.ADMIN_API_KEY }}" -H 'content-type: application/json' \
+            -d "{\"regions\": $regions, \"percent\": 0, \"build\": \"${{ needs.build.outputs.tag }}\"}"
+      - name: Health gate (30 min of real orders)
+        run: ./scripts/canary-gate.sh "${{ vars.API_URL }}" "${{ secrets.ADMIN_API_KEY }}" "$CANARY_REGIONS"
+
+  promote:
+    needs: [build, canary]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Roll out the build to all regions
+        run: echo "deploy ${IMAGE}:${{ needs.build.outputs.tag }} to all worker pools"
+      - name: Ramp the flag 25 → 50 → 100 %
+        run: |
+          for pct in 25 50 100; do
+            curl -sf -X PUT "${{ vars.API_URL }}/v1/flags/${FLAG}" \
+              -H "x-admin-key: ${{ secrets.ADMIN_API_KEY }}" -H 'content-type: application/json' \
+              -d "{\"percent\": $pct, \"build\": \"${{ needs.build.outputs.tag }}\"}"
+            sleep 600
+          done
+
+  rollback:
+    needs: [build, canary]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag off, canary workers back to the previous build
+        run: |
+          curl -sf -X PUT "${{ vars.API_URL }}/v1/flags/${FLAG}" \
+            -H "x-admin-key: ${{ secrets.ADMIN_API_KEY }}" -H 'content-type: application/json' \
+            -d '{"regions": [], "percent": 0}'
+          echo "redeploy previous image to canary worker pool"

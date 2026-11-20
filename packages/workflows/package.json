@@ -1,0 +1,19 @@
+{
+  "name": "@slice/workflows",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@slice/db": "*",
+    "@slice/shared": "*",
+    "@temporalio/activity": "^1.26.0",
+    "@temporalio/client": "^1.26.0",
+    "@temporalio/common": "^1.26.0",
+    "@temporalio/worker": "^1.26.0",
+    "@temporalio/workflow": "^1.26.0"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "^1.26.0"
+  }
+}

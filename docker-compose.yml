@@ -1,0 +1,105 @@
+# Full local stack:  docker compose up --build
+#   storefront  http://localhost:5173      Temporal UI  http://localhost:8233
+#   API         http://localhost:4000      MCP          http://localhost:4100/mcp
+# One Postgres serves both the app (database "slice") and Temporal ("temporal", "temporal_visibility").
+# Add `--profile demo` to start the kitchen/courier simulator.
+
+x-app: &app
+  build: .
+  image: slice-network:local
+  environment: &app-env
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/slice
+    TEMPORAL_ADDRESS: temporal:7233
+    API_URL: http://api:4000
+    PUBLIC_URL: http://localhost:4000
+    NODE_ENV: development
+    DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    temporal:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 20
+
+  temporal:
+    # Dev convenience image that creates Temporal's schemas in our Postgres.
+    # Production: Temporal's Helm chart (or Temporal Cloud) against a managed Postgres.
+    image: temporalio/auto-setup:1.29
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+    ports: ["7233:7233"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health | grep -q SERVING || temporal operator cluster health --address temporal:7233"]
+      interval: 5s
+      retries: 30
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["8233:8080"]
+    depends_on: [temporal]
+
+  migrate:
+    image: slice-network:local
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/slice
+    command: ["npx", "tsx", "packages/db/src/seed.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports: ["4000:4000"]
+    command: ["npx", "tsx", "packages/api/src/server.ts"]
+
+  worker:
+    <<: *app
+    command: ["npx", "tsx", "packages/workflows/src/worker.ts"]
+
+  schedules:
+    <<: *app
+    command: ["npx", "tsx", "packages/workflows/src/schedules.ts"]
+    restart: "no"
+
+  mcp:
+    <<: *app
+    ports: ["4100:4100"]
+    command: ["npx", "tsx", "packages/mcp/src/http.ts"]
+
+  web:
+    <<: *app
+    ports: ["5173:5173"]
+    environment:
+      <<: *app-env
+      API_URL: http://api:4000
+    command: ["npm", "run", "dev", "-w", "@slice/web", "--", "--host", "0.0.0.0"]
+
+  simulator:
+    <<: *app
+    profiles: [demo]
+    command: ["npx", "tsx", "packages/sim/src/ops.ts"]
+
+volumes:
+  pgdata:
